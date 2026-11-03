@@ -372,18 +372,11 @@ def click_edges(image: np.ndarray, existing: dict | None = None,
                     cv2.line(vis, (int(pp[0] * scale), int(pp[1] * scale)), q, colors[k], 1)
         if all(len(edges.get(k, [])) >= 2 for k in EDGES):
             try:
-<<<<<<< HEAD
-=======
                 # Guía visual: rejilla de 11x11 sobre la zona marcada
->>>>>>> 3b5f0fb (feat: integración DSLR offline y corrección de píxeles negros)
                 t = np.linspace(0, 1, 11)
                 uu, vv = np.meshgrid(t, t)
                 P = coons({k: edges[k] for k in EDGES}, uu, vv) * scale
                 for r in range(11):
-<<<<<<< HEAD
-                    cv2.polylines(vis, [P[r].astype(np.int32)], False, (200, 200, 200), 1)
-                    cv2.polylines(vis, [P[:, r].astype(np.int32)], False, (200, 200, 200), 1)
-=======
                     # Dibujar líneas de la rejilla con color cian suave para que resalte
                     cv2.polylines(vis, [P[r].astype(np.int32)], False, (255, 255, 0), 1, cv2.LINE_AA)
                     cv2.polylines(vis, [P[:, r].astype(np.int32)], False, (255, 255, 0), 1, cv2.LINE_AA)
@@ -395,7 +388,6 @@ def click_edges(image: np.ndarray, existing: dict | None = None,
                     cv2.polylines(vis, [P[-1].astype(np.int32)], False, (0, 255, 255), 2, cv2.LINE_AA)
                     cv2.polylines(vis, [P[:, 0].astype(np.int32)], False, (0, 255, 255), 2, cv2.LINE_AA)
                     cv2.polylines(vis, [P[:, -1].astype(np.int32)], False, (0, 255, 255), 2, cv2.LINE_AA)
->>>>>>> 3b5f0fb (feat: integración DSLR offline y corrección de píxeles negros)
             except Exception:
                 pass
         k = EDGES[state["i"]]
