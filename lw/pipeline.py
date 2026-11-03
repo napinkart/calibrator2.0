@@ -684,6 +684,13 @@ def compute(cfg: dict, work: Path, out: Path, edges=None, edge_mode=None, log=pr
         gn = np.where(solid, _sample_map(gain, x, y, border=1.0), 1.0).astype(np.float32)
         # si aun así quedara un píxel a 0 dentro de la pantalla Y nadie más lo
         # cubre, que ilumine: antes un píxel con luz que un agujero negro
+        # FUERZA DE RELLENO: cerramos huecos pequeños y rellenamos lo que quede
+        # dentro de la máscara sólida final.
+        if solid.any():
+            wgt = _fill_nearest(wgt, solid)
+            u = _fill_nearest(u, solid)
+            v = _fill_nearest(v, solid)
+
         gap = solid & (wgt <= 1e-3) & (_sample_map(ncov, x, y) < 1.5)
         if gap.any():
             wf = _fill_nearest(np.where(gap, 0.0, wgt), ~gap & solid)
@@ -907,6 +914,13 @@ def compute_per_projector(cfg, work, out, log=print):
         if gap.any():
             nc = np.maximum(_sample_map(ncov, x, y, border=1.0), 1.0)
             wgt = np.where(gap, np.maximum(wgt, (1.0 / nc)).astype(np.float32), wgt).astype(np.float32)
+
+        # FUERZA DE RELLENO ABSOLUTO: rellenar cualquier hueco o píxel no asignado dentro de solid
+        if solid.any():
+            uc = _fill_nearest(uc, solid)
+            vc = _fill_nearest(vc, solid)
+            wgt = _fill_nearest(wgt, solid)
+            wgt = np.where(solid, np.maximum(wgt, 0.05), 0.0).astype(np.float32)
 
         uo = np.where(solid, uc, -1.0).astype(np.float32)
         vo = np.where(solid, 1.0 - vc, -1.0).astype(np.float32)

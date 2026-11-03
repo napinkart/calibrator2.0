@@ -1291,6 +1291,32 @@ Valida individualmente CADA frame que usará el escaneo:
     # Video source selection
     st.subheader("Selección de Fuente de Video")
 
+    # NUEVA SECCIÓN OFFLINE DSLR
+    st.markdown("---")
+    st.subheader("📷 Captura Offline (DSLR)")
+    if st.checkbox("Usar video DSLR (Offline)"):
+        proj_idx = st.selectbox("Proyector para cargar video:", range(len(projectors)), format_func=lambda i: projector_names[i])
+        uploaded_file = st.file_uploader("Cargar video .avi", type=["avi"])
+
+        if uploaded_file and st.button("Procesar Video DSLR"):
+            temp_path = WORK / f"temp_vid_{proj_idx}.avi"
+            with open(temp_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+
+            from lw.dslr_process import extract_patterns
+            try:
+                count = extract_patterns(temp_path, WORK / f"raw_proj{proj_idx}")
+                st.success(f"✅ Extraídos {count} patrones para proyector {proj_idx}")
+
+                # 2. Ejecutar lógica de procesamiento offline (simular scan)
+                from lw.dslr_offline import run_offline_scan
+                config = load_config()
+                run_offline_scan(config, proj_idx, WORK)
+                st.success(f"✅ Escaneo offline completado para proyector {proj_idx}")
+            except Exception as e:
+                st.error(f"Error procesando video o generando scan: {e}")
+    st.markdown("---")
+
     # Detect available sources
     @st.cache_data(ttl=5)
     def get_video_sources():
