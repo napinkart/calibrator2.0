@@ -15,6 +15,9 @@ Uso:
   python calibrate.py screen   -c config.json --projector 1   bordes de ese proyector
                                                (se guardan en work/screen_proj1.json)
   python calibrate.py obsidian_screen -c config.json  genera nota en Obsidian para marcado
+  python calibrate.py patterns -c config.json [--projector 0] [--hold 0.4] [--sincronia 3] [--vueltas 1] [--fps 30]
+                                               proyecta la secuencia para GRABARLA con una cámara externa
+                                               (modo offline DSLR: no abre la cámara del PC)
   python calibrate.py guide    -c config.json  obtener instrucciones de colocación de cámara
   python calibrate.py compute  -c config.json  calcula mapas -> output/*.exr
   python calibrate.py diagnose -c config.json  explica por qué un escaneo falló (work/diagnostico.png)
@@ -257,6 +260,73 @@ def cmd_scan(args):
         except Exception:
             pass
     _log_status(cfg, "scan_complete", stats)
+
+
+def cmd_patterns(args):
+    """Proyecta la secuencia de patrones para grabarla (modo offline DSLR).
+
+    No abre la cámara: sólo pinta los patrones en el proyector, con el MISMO
+    orden y tamaño que usaría `scan`. Empieza con unos segundos de blanco puro
+    (la señal de sincronía que permite trocear el vídeo) y termina en negro.
+    El vídeo se trocea después con lw.dslr_process.extract_patterns().
+    """
+    from lw.devices import DisplayCanvas
+
+    cfg = load_cfg(args.config)
+    projs = cfg["projectors"]
+    proj = 0 if args.projector is None else int(args.projector)
+    if not (0 <= proj < len(projs)):
+        sys.exit(f"--projector {proj} no existe: hay {len(projs)} proyectores "
+                 f"(0..{len(projs) - 1}).")
+
+    sc = cfg["scan"]
+    p = projs[proj]
+    w, h = p["width"], p["height"]
+    cell = sc.get("cell_size", 16)
+    intensity = sc.get("pattern_intensity", 255)
+    phase_steps = sc.get("phase_steps", 8)
+    phase_period = sc.get("phase_period", 32)
+
+    hold = float(args.hold)
+    if hold <= 0:
+        sys.exit("--hold debe ser > 0 (segundos que se muestra cada patrón).")
+    sync_s = max(0.0, float(args.sincronia))
+    vueltas = max(1, int(args.vueltas))
+    stride = max(0, int(round(float(args.fps) * hold)) - 1)
+    n_pat = patterns.sequence_length(w, h, cell, phase_steps)
+
+    print(f"Proyector {proj} ({p.get('name', '?')}): {w}x{h}, cell={cell}")
+    print(f"{n_pat} patrones x {hold:.2f} s = {n_pat * hold:.1f} s por vuelta, {vueltas} vuelta(s).")
+    print(f"Sincronia: {sync_s:.1f} s de blanco puro al principio.")
+    print(f"Grabando a {float(args.fps):g} fps -> al extraer usa stride={stride}.")
+    if sync_s <= 0:
+        print("AVISO: sin blanco de sincronia el video no se podra trocear.")
+    print("Ctrl+C para cortar. La secuencia termina en negro.")
+
+    canvas = DisplayCanvas(cfg)
+    wait = max(1, int(round(hold * 1000)))
+    try:
+        for v in range(vueltas):
+            # 1) sincronia: blanco puro en todos los proyectores
+            canvas.clear(0)
+            for i, pr in enumerate(projs):
+                canvas.set(i, np.full((pr["height"], pr["width"]), 255, np.uint8))
+            print(f"vuelta {v + 1}/{vueltas}: blanco de sincronia {sync_s:.1f} s")
+            canvas.flush(max(1, int(sync_s * 1000)))
+            # 2) la secuencia, en el proyector elegido
+            for k, (name, img) in enumerate(patterns.make_sequence(
+                    w, h, cell, intensity, phase_steps, phase_period, False)):
+                canvas.clear(0)
+                canvas.set(proj, img)
+                canvas.flush(wait)
+                print(f"  vuelta {v + 1}/{vueltas} - patron {k + 1}/{n_pat} ({name})")
+        canvas.clear(0)
+        canvas.flush(500)
+    except KeyboardInterrupt:
+        print("\nCortado por el usuario.")
+    finally:
+        canvas.close()
+    print(f"Secuencia terminada: {vueltas} vuelta(s) de {n_pat} patrones.")
 
 
 def cmd_screen(args):
@@ -589,7 +659,8 @@ def main():
     ap = argparse.ArgumentParser(description="LibreWarp - calibrador warp & blend")
     ap.add_argument("command", choices=["monitors", "list_devices", "ndi", "identify", "adjust", "scan", "screen",
                                         "obsidian_screen", "guide", "compute", "diagnose", "verify", "all", "simulate", "clean",
-                                        "section_scan", "stitch_sections", "sections_status", "verify_sections", "clean_sections"])
+                                        "section_scan", "stitch_sections", "sections_status", "verify_sections", "clean_sections",
+                                        "patterns"])
     ap.add_argument("-c", "--config", default="config.json")
     ap.add_argument("--image", help="imagen de contenido para 'verify'")
     ap.add_argument("--reset", action="store_true", help="'screen': empezar de cero")
@@ -614,6 +685,14 @@ def main():
     ap.add_argument('--threshold', type=float, default=0.5, help='Umbral para verify_sections')
     ap.add_argument('--confirm', action='store_true', help='Confirmar limpieza de secciones')
     ap.add_argument('--output-dir', help='Directorio de salida para stitch_sections')
+    ap.add_argument('--hold', type=float, default=0.4,
+                    help="'patterns': segundos que se muestra cada patron")
+    ap.add_argument('--sincronia', type=float, default=3.0,
+                    help="'patterns': segundos de blanco puro al principio (senal de sincronia)")
+    ap.add_argument('--vueltas', type=int, default=1,
+                    help="'patterns': cuantas veces repetir la secuencia")
+    ap.add_argument('--fps', type=float, default=30.0,
+                    help="'patterns': fps de la grabacion, para calcular el stride")
     args = ap.parse_args()
     globals()[f"cmd_{args.command}"](args)
 

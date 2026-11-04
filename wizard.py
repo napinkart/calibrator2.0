@@ -901,6 +901,7 @@ def stage_status() -> dict:
 
 
 STEPS = ["🏠 Home", "1 · Config pantallas", "2 · Identificar", "3 · Elegir/ajustar cámara",
+         "3.5 · Validar frames / DSLR",
          "4 · Escanear", "5 · Marcar bordes", "6 · Calcular", "7 · Verificar",
          "8 · TouchDesigner", "9 · Agente + Obsidian"]
 
@@ -913,12 +914,12 @@ def auto_step(ss: dict):
     if not ss["scanned"]:
         return STEPS[2]
     if not ss.get("scanned_all", True):
-        return STEPS[4]              # quedan proyectores por escanear
+        return STEPS[5]              # quedan proyectores por escanear
     if not ss["edges"]:
-        return STEPS[5]
-    if not ss["computed"]:
         return STEPS[6]
-    return STEPS[7]
+    if not ss["computed"]:
+        return STEPS[7]
+    return STEPS[8]
 
 
 # ==========================================================================
@@ -1098,13 +1099,13 @@ if step.startswith("🏠"):
          "ver SU número en cada proyector"),
         (STEPS[3], "📷 Cámara", cam_cfg is not None,
          cam_desc if cam_cfg else "elegir fuente + exposición"),
-        (STEPS[4], "🎞 Escanear", ss["scanned"],
+        (STEPS[5], "🎞 Escanear", ss["scanned"],
          f"{ss['n_scans']} escaneo(s) en work/" if ss["scanned"] else "con feed en vivo"),
-        (STEPS[5], "✏️ Bordes", ss["edges"], "clics sobre all_white.png"),
-        (STEPS[6], "🧮 Calcular", ss["computed"], "mapas .exr + calibration.json"),
-        (STEPS[7], "✅ Verificar", ss["computed"], "rejilla/blanco en los proyectores"),
-        (STEPS[8], "🎯 TouchDesigner", ss["computed"], "COMP librewarp + ventanas"),
-        (STEPS[9], "🤖 Agente + Obsidian", True, "fcc-claude y bóveda de fallos"),
+        (STEPS[6], "✏️ Bordes", ss["edges"], "clics sobre all_white.png"),
+        (STEPS[7], "🧮 Calcular", ss["computed"], "mapas .exr + calibration.json"),
+        (STEPS[8], "✅ Verificar", ss["computed"], "rejilla/blanco en los proyectores"),
+        (STEPS[9], "🎯 TouchDesigner", ss["computed"], "COMP librewarp + ventanas"),
+        (STEPS[10], "🤖 Agente + Obsidian", True, "fcc-claude y bóveda de fallos"),
     ]
 
     def _goto_step(name: str) -> None:
@@ -1293,28 +1294,84 @@ Valida individualmente CADA frame que usará el escaneo:
 
     # NUEVA SECCIÓN OFFLINE DSLR
     st.markdown("---")
-    st.subheader("📷 Captura Offline (DSLR)")
-    if st.checkbox("Usar video DSLR (Offline)"):
-        proj_idx = st.selectbox("Proyector para cargar video:", range(len(projectors)), format_func=lambda i: projector_names[i])
-        uploaded_file = st.file_uploader("Cargar video .avi", type=["avi"])
+    st.subheader("📷 Captura offline (DSLR)")
+    # OJO: projectors/projector_names son locales de scan_section(); aquí hay que
+    # leerlos de la config (antes el bloque reventaba con NameError).
+    config_35 = load_config() or {}
+    projectors = config_35.get("projectors", [])
+    projector_names = [p.get("name", f"proyector{i}") for i, p in enumerate(projectors)]
+    if not projectors:
+        st.warning("No hay proyectores en config.json: configúralos en el paso 1.")
+    elif st.checkbox("Usar vídeo DSLR (offline)"):
+        from lw import patterns
+        from lw.config import normalize
+        from lw.dslr_offline import run_offline_scan, sequence_names
+        from lw.dslr_process import extract_patterns
 
-        if uploaded_file and st.button("Procesar Video DSLR"):
-            temp_path = WORK / f"temp_vid_{proj_idx}.avi"
+        proj_idx = st.selectbox("Proyector del vídeo:", range(len(projectors)),
+                                format_func=lambda i: projector_names[i])
+        try:
+            _nc = normalize(json.loads(json.dumps(config_35)))
+            _p = _nc["projectors"][proj_idx]
+            n_pat = patterns.sequence_length(_p["width"], _p["height"],
+                                             _nc["scan"].get("cell_size", 16),
+                                             _nc["scan"].get("phase_steps", 8))
+            cfg_err = None
+        except Exception as e:
+            n_pat, cfg_err = None, str(e)
+
+        st.markdown("**1 · Proyecta la secuencia y grábala** (la cámara del PC no hace falta)")
+        c_hold, c_sync, c_fps = st.columns(3)
+        with c_hold:
+            hold = st.number_input("Segundos por patrón", min_value=0.1, max_value=10.0,
+                                   value=0.4, step=0.1,
+                                   help="Más lento = más fácil trocear el vídeo después.")
+        with c_sync:
+            sync_s = st.number_input("Blanco de sincronía (s)", min_value=0.0, max_value=30.0,
+                                     value=3.0, step=0.5,
+                                     help="Blanco puro al principio: es la marca que permite "
+                                          "trocear el vídeo.")
+        with c_fps:
+            fps = st.number_input("fps de grabación", min_value=1.0, max_value=240.0,
+                                  value=30.0, step=1.0)
+        stride_default = max(0, int(round(fps * hold)) - 1)
+        if cfg_err:
+            st.error(f"No se pudo leer el tamaño del proyector: {cfg_err}")
+        else:
+            st.caption(f"{n_pat} patrones × {hold:g} s ≈ {n_pat * hold:.0f} s por vuelta. "
+                       f"Al extraer, el stride recomendado es {stride_default} "
+                       "(fps × segundos − 1).")
+            if st.button("▶️ Proyectar la secuencia para grabar", type="primary"):
+                calibrate_cli(["patterns", "-c", "config.json",
+                               "--projector", str(proj_idx),
+                               "--hold", f"{hold:g}", "--sincronia", f"{sync_s:g}",
+                               "--fps", f"{fps:g}"], key_prefix="play_patterns")
+
+        st.markdown("**2 · Sube el vídeo grabado**")
+        uploaded_file = st.file_uploader("Vídeo de la secuencia proyectada",
+                                         type=["avi", "mp4", "mov", "mkv"])
+        stride = st.number_input("Frames a descartar entre patrón y patrón", min_value=0,
+                                 value=stride_default, step=1,
+                                 help="Fórmula: fps × segundos por patrón − 1.")
+        if uploaded_file and st.button("Procesar vídeo DSLR"):
+            suffix = Path(uploaded_file.name).suffix or ".avi"
+            temp_path = WORK / f"temp_vid_{proj_idx}{suffix}"
             with open(temp_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
-
-            from lw.dslr_process import extract_patterns
             try:
-                count = extract_patterns(temp_path, WORK / f"raw_proj{proj_idx}")
-                st.success(f"✅ Extraídos {count} patrones para proyector {proj_idx}")
-
-                # 2. Ejecutar lógica de procesamiento offline (simular scan)
-                from lw.dslr_offline import run_offline_scan
-                config = load_config()
-                run_offline_scan(config, proj_idx, WORK)
-                st.success(f"✅ Escaneo offline completado para proyector {proj_idx}")
+                # El nombrado de los frames sale de la MISMA secuencia que
+                # espera el Decoder (black, white, col00p, col00, ..., phx00)
+                names = sequence_names(config_35, proj_idx)
+                count = extract_patterns(temp_path, WORK / f"raw_proj{proj_idx}",
+                                         names=names, stride=int(stride))
+                st.success(f"✅ {count} patrones extraídos para {projector_names[proj_idx]}")
+                run_offline_scan(config_35, proj_idx, WORK)
+                st.success(f"✅ Escaneo offline listo: work/scan_proj{proj_idx}.npz "
+                           "(continúa en el paso 6)")
             except Exception as e:
-                st.error(f"Error procesando video o generando scan: {e}")
+                st.error(f"Error procesando el vídeo o generando el escaneo: {e}")
+            finally:
+                temp_path.unlink(missing_ok=True)
     st.markdown("---")
 
     # Detect available sources
@@ -1531,7 +1588,7 @@ Valida individualmente CADA frame que usará el escaneo:
                             # Clear validation state and go to step 4
                             if "validation_state" in st.session_state:
                                 del st.session_state.validation_state
-                            st.session_state["_step_sel"] = "4 "
+                            st.session_state["_step_sel"] = STEPS[5]
                             st.rerun()
                     else:
                         st.info(f"Pasando al patrón {state['current_pattern_idx'] + 1}: {state['pattern_sequence'][state['current_pattern_idx']]['desc']}")
@@ -1550,7 +1607,7 @@ Valida individualmente CADA frame que usará el escaneo:
             # Clear validation state and go to step 3 normally
             if "validation_state" in st.session_state:
                 del st.session_state.validation_state
-            st.session_state["_step_sel"] = "3 "
+            st.session_state["_step_sel"] = STEPS[3]
             st.rerun()
 
     # Analysis guide
@@ -1572,7 +1629,7 @@ Valida individualmente CADA frame que usará el escaneo:
         # Clear validation state
         if "validation_state" in st.session_state:
             del st.session_state.validation_state
-        st.session_state["_step_sel"] = "3 "
+        st.session_state["_step_sel"] = STEPS[3]
         st.rerun()
 
 # ==========================================================================
