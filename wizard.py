@@ -43,6 +43,10 @@ st.set_page_config(page_title="LibreWarp — Calibrador", page_icon="🎯", layo
 
 WORK = HERE / "work"
 OUT = HERE / "output"
+# work/ está en .gitignore: al copiar el repo a otro PC no existe, y cualquier
+# escritura dentro (p.ej. el vídeo temporal del modo DSLR) fallaba con
+# FileNotFoundError. Se crea aquí una vez, para todas las rutas de work/.
+WORK.mkdir(parents=True, exist_ok=True)
 SIM_PY = HERE.parent / ".venv-sim" / "Scripts" / "python.exe"
 VENV_PY = HERE / ".venv" / "Scripts" / "python.exe"
 
