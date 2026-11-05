@@ -16,17 +16,27 @@ import cv2
 SYNC_MEAN = 240.0  # brillo medio del frame de sincronía (blanco puro "ideal")
 SYNC_MIN = 170.0   # mínimo aceptable si la cámara subexpone el blanco
 DARK_MEAN = 200.0  # por debajo de esto se considera el primer patrón (negro)
-PROBE_FRAMES = 2000  # frames del principio que se inspeccionan para el umbral
+def _frame_mean(frame):
+    """Brillo medio 0-255 del frame (se reduce para que vídeos largos vayan rápido)."""
+    h, w = frame.shape[:2]
+    if w > 320:
+        frame = cv2.resize(frame, (320, max(1, int(h * 320 / w))),
+                           interpolation=cv2.INTER_AREA)
+    return float(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean())
 
 
-def _sync_threshold(video_path, sync_mean, probe_frames=PROBE_FRAMES):
-    """Devuelve (umbral, brillo_max) para localizar el blanco de sincronía.
+def _sync_threshold(video_path, sync_mean, probe_frames=None):
+    """Devuelve (umbral, brillo_max, frames_leidos) para el blanco de sincronía.
 
     Un blanco proyectado y grabado con una cámara casi nunca llega a 240 de
     brillo medio (exposición automática, viñeteo, luz ambiente del local), así
     que si el umbral nominal no aparece en el vídeo se baja hasta algo por
-    debajo del frame más brillante del principio. Devuelve `umbral=None` si ni
-    ese frame parece un blanco.
+    debajo del frame más brillante. Devuelve `umbral=None` si ni ese frame
+    parece un blanco.
+
+    Se recorre el vídeo ENTERO (no sólo el principio): si se empieza a grabar
+    mucho antes de lanzar la secuencia, el blanco puede caer muy tarde.
+    `probe_frames` permite limitar el sondeo a los N primeros frames.
     """
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -34,25 +44,25 @@ def _sync_threshold(video_path, sync_mean, probe_frames=PROBE_FRAMES):
     peak = 0.0
     n = 0
     try:
-        while n < int(probe_frames):
+        while probe_frames is None or n < int(probe_frames):
             ret, frame = cap.read()
             if not ret:
                 break
             n += 1
-            mean = float(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean())
+            mean = _frame_mean(frame)
             if mean > peak:
                 peak = mean
             if mean > sync_mean:
                 # El blanco nominal está ahí: no hace falta seguir mirando.
-                return sync_mean, peak
+                return sync_mean, peak, n
     finally:
         cap.release()
 
     if peak >= SYNC_MIN:
         # Blanco más apagado de lo ideal: se acepta un 90 % del frame más
         # brillante, que en una grabación real es el blanco de sincronía.
-        return min(sync_mean, max(SYNC_MIN, peak * 0.9)), peak
-    return None, peak
+        return min(sync_mean, max(SYNC_MIN, peak * 0.9)), peak, n
+    return None, peak, n
 
 
 def extract_patterns(video_path, output_dir, names=None, num_patterns=32,
@@ -88,12 +98,17 @@ def extract_patterns(video_path, output_dir, names=None, num_patterns=32,
     for f in output_dir.glob("*.png"):
         f.unlink()
 
-    threshold, peak = _sync_threshold(video_path, sync_mean)
+    threshold, peak, probed = _sync_threshold(video_path, sync_mean)
+    if probed == 0:
+        raise RuntimeError(
+            f"OpenCV no pudo decodificar ningún frame de {video_path.name}. "
+            "El contenedor se abre pero el códec no (típico con HEVC/H.265 o "
+            "vídeos de iPhone). Conviértelo a H.264/MP4 y vuelve a subirlo.")
     if threshold is None:
         raise RuntimeError(
-            f"No se encontró el frame de sincronía en {video_path.name}: el frame "
-            f"más brillante de los primeros {PROBE_FRAMES} tiene brillo medio "
-            f"{peak:.0f} (se necesita al menos {SYNC_MIN:.0f}). "
+            f"No se encontró el frame de sincronía en {video_path.name}: de {probed} "
+            f"frames leídos, el más brillante tiene brillo medio {peak:.0f} "
+            f"(se necesita al menos {SYNC_MIN:.0f}). "
             "Graba también el blanco de sincronía: empieza a grabar ANTES de "
             "lanzar la secuencia, con la exposición fija y el local a oscuras.")
 
@@ -105,12 +120,13 @@ def extract_patterns(video_path, output_dir, names=None, num_patterns=32,
     skip = 0
     sync_found = False
     sync_mean_seen = 0.0
+    frames_after_sync = 0
     try:
         while saved < len(names):
             ret, frame = cap.read()
             if not ret:
                 break
-            mean = float(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).mean())
+            mean = _frame_mean(frame)
 
             if not sync_found:
                 # Antes de la sincronía (blanco puro) no hay secuencia todavía
@@ -118,6 +134,7 @@ def extract_patterns(video_path, output_dir, names=None, num_patterns=32,
                     sync_found = True
                     sync_mean_seen = mean
                 continue
+            frames_after_sync += 1
             if skip > 0:
                 skip -= 1
                 continue
@@ -136,9 +153,13 @@ def extract_patterns(video_path, output_dir, names=None, num_patterns=32,
             f"No se encontró el frame de sincronía (brillo medio > {threshold:.0f}) "
             f"en {video_path}. Graba también el blanco de sincronía.")
     if saved < len(names):
+        frames_left = frames_after_sync
+        sugg = max(0, frames_left // len(names) - 1)
         raise RuntimeError(
             f"Sólo se extrajeron {saved} de {len(names)} patrones: el vídeo se acabó "
-            f"antes. Revisa que esté completo y ajusta «stride».")
+            f"antes ({frames_left} frames después del blanco de sincronía). "
+            f"Con {frames_left} frames, el «stride» adecuado sería {sugg} "
+            f"(ahora {int(stride)}). O el vídeo está incompleto.")
 
     print(f"Señal de sincronía detectada (brillo medio {sync_mean_seen:.0f}, "
           f"umbral {threshold:.0f}). {saved} patrones extraídos en {output_dir}")
