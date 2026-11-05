@@ -29,7 +29,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from lw.dslr_offline import sequence_names  # noqa: E402
-from lw.dslr_process import _sync_threshold, extract_patterns  # noqa: E402
+from lw.dslr_process import _find_sync_frame, extract_patterns  # noqa: E402
 
 
 def _mean(frame):
@@ -99,17 +99,16 @@ def inspect(path):
         cv2.imwrite(str(out / f"{path.stem}_frame_mas_brillante.png"), brightest_frame)
         print(f"guardado el frame más brillante en {out}")
 
-    threshold, peak, probed = _sync_threshold(path, 240.0)
-    print(f"umbral de sincronía elegido: {threshold} (pico {peak:.0f}, "
-          f"{probed} frames sondeados)")
-    if threshold is not None:
-        idx = int(np.argmax(arr > threshold))
-        t = f" ({idx / fps:.2f} s)" if fps else ""
-        print(f"primer frame blanco en el frame {idx}{t}: ahí empieza la extracción")
+    sync_idx, peak = _find_sync_frame(path)
+    if sync_idx is None:
+        print(f"NO se encontró el blanco de sincronía (frame más brillante: {peak:.0f})")
+    else:
+        t = f" ({sync_idx / fps:.2f} s)" if fps else ""
+        print(f"blanco de sincronía en el frame {sync_idx}{t}: ahí empieza la extracción")
     return {"means": arr, "fps": fps, "n": n}
 
 
-def try_extract(path, projector, hold, stride=None):
+def try_extract(path, projector, stride=None):
     cfg_path = HERE / "config.json"
     try:
         import json
@@ -119,19 +118,12 @@ def try_extract(path, projector, hold, stride=None):
         print(f"\nNo se pudo leer config.json ({e}): se prueba con 36 nombres genéricos.")
         names = [f"p{i}" for i in range(36)]
 
-    stride_v = stride
-    if stride_v is None:
-        fp = Path(path)
-        cap = cv2.VideoCapture(str(fp))
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        cap.release()
-        stride_v = max(0, int(round(fps * hold)) - 1)
-        print(f"\nfps {fps:g} x {hold:g} s - 1 = stride {stride_v}")
-
     out = HERE / "work" / "_check" / "raw"
-    print(f"\n== Prueba real: {len(names)} patrones, stride {stride_v} ==")
+    modo = "automático" if stride is None else f"stride {stride} forzado"
+    print(f"\n== Prueba real: {len(names)} patrones, troceado {modo} ==")
     try:
-        n = extract_patterns(Path(path), out, names=names, stride=int(stride_v))
+        n = extract_patterns(Path(path), out, names=names,
+                             stride=None if stride is None else int(stride))
         falta = [x for x in names if not (out / f"{x}.png").exists()]
         print(f"OK: {n} patrones extraídos, faltan {len(falta)}: {falta[:5]}")
     except Exception as e:
@@ -143,10 +135,8 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("video")
     ap.add_argument("--projector", type=int, default=0)
-    ap.add_argument("--hold", type=float, default=0.4,
-                    help="segundos por patrón que usaste al proyectar")
     ap.add_argument("--stride", type=int, default=None,
-                    help="forzar un stride concreto")
+                    help="forzar el modo antiguo con un stride concreto")
     args = ap.parse_args()
 
     path = Path(args.video).expanduser()
@@ -154,7 +144,7 @@ def main():
         sys.exit(f"No existe: {path}")
     info = inspect(path)
     if info:
-        try_extract(path, args.projector, args.hold, args.stride)
+        try_extract(path, args.projector, args.stride)
 
 
 if __name__ == "__main__":

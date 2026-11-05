@@ -1338,13 +1338,10 @@ Valida individualmente CADA frame que usará el escaneo:
         with c_fps:
             fps = st.number_input("fps de grabación", min_value=1.0, max_value=240.0,
                                   value=30.0, step=1.0)
-        stride_default = max(0, int(round(fps * hold)) - 1)
         if cfg_err:
             st.error(f"No se pudo leer el tamaño del proyector: {cfg_err}")
         else:
-            st.caption(f"{n_pat} patrones × {hold:g} s ≈ {n_pat * hold:.0f} s por vuelta. "
-                       f"Al extraer, el stride recomendado es {stride_default} "
-                       "(fps × segundos − 1).")
+            st.caption(f"{n_pat} patrones × {hold:g} s ≈ {n_pat * hold:.0f} s por vuelta.")
             if st.button("▶️ Proyectar la secuencia para grabar", type="primary"):
                 calibrate_cli(["patterns", "-c", "config.json",
                                "--projector", str(proj_idx),
@@ -1354,9 +1351,9 @@ Valida individualmente CADA frame que usará el escaneo:
         st.markdown("**2 · Sube el vídeo grabado**")
         uploaded_file = st.file_uploader("Vídeo de la secuencia proyectada",
                                          type=["avi", "mp4", "mov", "mkv"])
-        stride = st.number_input("Frames a descartar entre patrón y patrón", min_value=0,
-                                 value=stride_default, step=1,
-                                 help="Fórmula: fps × segundos por patrón − 1.")
+        st.caption("El troceado es automático: el programa busca el blanco de sincronía "
+                   "en todo el vídeo y detecta solo dónde cambia cada patrón. "
+                   "No hay que indicar fps ni frames a descartar.")
         if uploaded_file and st.button("Procesar vídeo DSLR"):
             suffix = Path(uploaded_file.name).suffix or ".avi"
             temp_path = WORK / f"temp_vid_{proj_idx}{suffix}"
@@ -1366,10 +1363,12 @@ Valida individualmente CADA frame que usará el escaneo:
                 # El nombrado de los frames sale de la MISMA secuencia que
                 # espera el Decoder (black, white, col00p, col00, ..., phx00)
                 names = sequence_names(config_35, proj_idx)
-                count = extract_patterns(temp_path, WORK / f"raw_proj{proj_idx}",
-                                         names=names, stride=int(stride))
+                with st.spinner("Buscando el blanco de sincronía y troceando el vídeo…"):
+                    count = extract_patterns(temp_path, WORK / f"raw_proj{proj_idx}",
+                                             names=names)
                 st.success(f"✅ {count} patrones extraídos para {projector_names[proj_idx]}")
-                run_offline_scan(config_35, proj_idx, WORK)
+                with st.spinner("Generando el escaneo offline…"):
+                    run_offline_scan(config_35, proj_idx, WORK)
                 st.success(f"✅ Escaneo offline listo: work/scan_proj{proj_idx}.npz "
                            "(continúa en el paso 6)")
             except Exception as e:
