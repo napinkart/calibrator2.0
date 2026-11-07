@@ -315,7 +315,7 @@ def cmd_patterns(args):
             canvas.flush(max(1, int(sync_s * 1000)))
             # 2) la secuencia, en el proyector elegido
             for k, (name, img) in enumerate(patterns.make_sequence(
-                    w, h, cell, intensity, phase_steps, phase_period, False)):
+                    w, h, cell, intensity, phase_steps, phase_period, True)):
                 canvas.clear(0)
                 canvas.set(proj, img)
                 canvas.flush(wait)
