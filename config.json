@@ -2,18 +2,10 @@
   "projectors": [
     {
       "name": "proyector1",
-      "display": 0,
-      "output": 1
-    },
-    {
-      "name": "proyector2",
-      "display": 0,
-      "output": 2
-    },
-    {
-      "name": "proyector3",
-      "display": 0,
-      "output": 3
+      "x": 0,
+      "y": 0,
+      "width": 1366,
+      "height": 768
     }
   ],
   "scan": {
@@ -63,16 +55,6 @@
   "section_mode": false,
   "current_section": -1,
   "sections": [],
-  "surface_type": "concave",
-  "surface_radius": 10.0,
-  "displays": [
-    {
-      "name": "Splitter/\\\\.\\DISPLAY2",
-      "x": 1920,
-      "y": 0,
-      "width": 7680,
-      "height": 1080,
-      "layout": "4x1"
-    }
-  ]
+  "surface_type": "flat",
+  "surface_radius": 10.0
 }
