@@ -63,16 +63,6 @@
   "section_mode": false,
   "current_section": -1,
   "sections": [],
-  "surface_type": "concave",
-  "surface_radius": 10.0,
-  "displays": [
-    {
-      "name": "Splitter/\\\\.\\DISPLAY2",
-      "x": 1920,
-      "y": 0,
-      "width": 7680,
-      "height": 1080,
-      "layout": "4x1"
-    }
-  ]
+  "surface_type": "flat",
+  "surface_radius": 10.0
 }
