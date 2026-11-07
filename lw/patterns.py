@@ -172,6 +172,8 @@ class Decoder:
         self.white = None
         self.black = None
         self.n_added = 0
+        self._sig_white = None   # señal G-B para el blanco (si hay color)
+        self._sig_black = None   # señal G-B para el negro (si hay color)
         self._g = {}          # eje -> acumulador Gray
         self._bad = {}        # eje -> OR de bits con poco contraste
         self._bit = {"col": 0, "row": 0}
@@ -182,18 +184,34 @@ class Decoder:
 
     # -- entrada ----------------------------------------------------------
     def add(self, name: str, img: np.ndarray):
-        # img puede ser HxW (escala de grises) o HxWx3 (BGR). Para los patrones
-        # de color usamos la luminancia (mismos pesos que cv2.COLOR_BGR2GRAY),
-        # así el decodificado es idéntico al de los patrones blanco/negro.
+        # img puede ser HxW (escala de grises) o HxWx3 (BGR).
+        # Para proyectores láser, usamos señales robustas a saturación:
+        # - black/white: luminancia normal (para calcular zona iluminada y diagnóstico)
+        # - col/row: diferencia G-B normalizada (contraste de color amarillo/azul,
+        #   mucho más robusto a saturación que la luminancia)
+        # - phx/phy: luminancia normal (patrones suaves, saturación menos crítica)
         a = np.asarray(img, dtype=np.float32)
-        if a.ndim == 3:
-            b, g, r = a[..., 0], a[..., 1], a[..., 2]
-            a = 0.114 * b + 0.587 * g + 0.299 * r
         axis = name[:3]
+        # Luminancia siempre (para white/black y diagnóstico)
+        if a.ndim == 3:
+            b, g, r = a[..., 0].astype(np.float32), a[..., 1].astype(np.float32), a[..., 2].astype(np.float32)
+            lum = 0.114 * b + 0.587 * g + 0.299 * r
+        else:
+            lum = a
+        # Señal para decodificación: luminancia por defecto, G-B para col/row
+        if a.ndim == 3 and axis in ("col", "row"):
+            # Diferencia G-B normalizada a 0-255: amarillo=255, azul=0
+            # Con láser saturado, la diferencia entre canales mantiene contraste
+            # incluso cuando la luminancia está recortada.
+            a = np.clip((g - b) * 0.5 + 128.0, 0.0, 255.0)
+        else:
+            a = lum
         if name == "black":
-            self.black = a
+            self.black = lum
+            self._sig_black = a
         elif name == "white":
-            self.white = a
+            self.white = lum
+            self._sig_white = a
         elif axis in ("col", "row"):
             k = int(name[3:5])
             if name.endswith("p"):
@@ -219,7 +237,29 @@ class Decoder:
             self._g[axis] = np.zeros(d.shape, np.int32)
             self._bad[axis] = np.zeros(d.shape, np.uint8)
         self._g[axis] = (self._g[axis] << 1) | (d > 0).astype(np.int32)
-        self._bad[axis] |= (np.abs(d) <= self.min_contrast).astype(np.uint8)
+        # Contraste adaptativo: en lugar de un umbral fijo, usamos un percentil
+        # del valor absoluto de la diferencia. Con láseres saturados, el contraste
+        # real puede ser menor que el configurado, pero la RELACIÓN entre
+        # píxeles buenos y malos sigue siendo informativa.
+        thr = self._adaptive_contrast(d)
+        self._bad[axis] |= (np.abs(d) <= thr).astype(np.uint8)
+
+    def _adaptive_contrast(self, d: np.ndarray) -> float:
+        """Umbral de contraste adaptativo para un patrón Gray.
+
+        Con proyectores láser, el contraste absoluto puede estar reducido por
+        saturación parcial, pero la diferencia entre píxeles que ven el patrón
+        y los que no sigue siendo grande. Usamos un percentil bajo de la
+        distribución de |d| como umbral: separa píxeles con señal real de ruido.
+        """
+        ad = np.abs(np.asarray(d, dtype=np.float32)).ravel()
+        ad = ad[np.isfinite(ad)]
+        if ad.size == 0:
+            return float(self.min_contrast)
+        # El umbral es el percentil 10 de |d|: la mayoría de los píxeles tienen
+        # señal clara, y los que están cerca de 0 son ruido o saturación
+        p10 = float(np.percentile(ad, 10))
+        return max(float(self.min_contrast), p10 * 0.3)
 
     def _phase_step(self, axis: str, k: int, a: np.ndarray):
         if self.phase_steps < 3:
@@ -237,7 +277,18 @@ class Decoder:
         if self.white is None or self.black is None:
             raise RuntimeError("El decodificador necesita los patrones 'black' y 'white'.")
         white, black = self.white, self.black
-        lit = (white - black) > self.white_threshold
+
+        # Umbrales adaptativos: en lugar de usar valores fijos (que fallan con
+        # láser saturados), los calculamos desde la distribución real de los datos.
+        # Usamos la señal G-B (si está disponible) para calcular el umbral de
+        # "iluminado", que es mucho más robusta a saturación que la luminancia.
+        if self._sig_white is not None and self._sig_black is not None:
+            diff = self._sig_white - self._sig_black
+        else:
+            diff = white - black
+        wt = self._adaptive_threshold(diff)
+
+        lit = diff > wt
         valid = lit.copy()
 
         cxi = gray_to_binary(self._gray("col", self.bx))
@@ -269,6 +320,28 @@ class Decoder:
             out["proj_x"] = np.where(pv, xp, np.nan).astype(np.float32)
             out["proj_y"] = np.where(pv, yp, np.nan).astype(np.float32)
         return out
+
+    def _adaptive_threshold(self, diff: np.ndarray) -> float:
+        """Umbral de "iluminado" adaptativo: calculado desde los datos.
+
+        En lugar de un valor fijo, usa la distribución de la diferencia
+        blanco-negro. Con un proyector láser que satura, el valor absoluto de
+        los píxeles no es fiable, pero la DISTANCIA entre blanco y negro sí lo es.
+
+        Estrategia: toma el percentil 25 de la diferencia como umbral. Así:
+        - Zona bien iluminada: diferencia alta, supera el umbral fácilmente
+        - Zona oscura/saturada: diferencia baja, queda por debajo
+        - Ruido: diferencia cercana a 0, queda descartada
+        """
+        d = np.asarray(diff, dtype=np.float32).ravel()
+        # Ignorar valores extremos (píxeles completamente saturados)
+        d = d[np.isfinite(d)]
+        if d.size == 0:
+            return float(self.white_threshold)
+        # El umbral es el percentil 25 de la diferencia: separa ruido de señal
+        p25 = float(np.percentile(d, 25))
+        # Nunca ir por debajo del umbral mínimo configurado (para no accepting ruido)
+        return max(float(self.white_threshold), p25 * 0.5)
 
     def _gray(self, axis: str, nb: int) -> np.ndarray:
         if axis not in self._g or self._bit[axis] < nb:

@@ -162,7 +162,7 @@ def _capture_sequence(rig, cfg: dict, i: int, work: Path, log=print) -> dict:
     settle = cfg.get("camera", {}).get("settle_ms", 500) / 1000.0
     for k, (name, img) in enumerate(patterns.make_sequence(
             w, h, cell, sc.get("pattern_intensity", 255), phase_steps,
-            sc.get("phase_period", 32), False)):
+            sc.get("phase_period", 32), True)):
         rig.show_only(i, img)
         time.sleep(settle)
         cap = rig.capture()
