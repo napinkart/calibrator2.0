@@ -344,6 +344,36 @@ def apply_config_no_splitter(mons: list[dict], cam: dict | None):
     return edit_config(mut)
 
 
+# Perfiles OFFLINE / manuales: no requieren que el hardware esté conectado.
+# El resto del pipeline (compute, warp/blend, pre-procesado de video) solo usa
+# los width/height de config.json (via lw.config.normalize), nunca detecta
+# monitores en vivo. Por eso fijar aqui el perfil basta para trabajar offline.
+MANUAL_PRESETS = {
+    "1 proyector 1920x1080 (sin splitter)": dict(name="proyector1", x=0, y=0, width=1920, height=1080, layout="1x1", n=1),
+    "2 proyectores 3840x1080 (2x1)": dict(name="QuadHead2Go", x=1920, y=0, width=3840, height=1080, layout="2x1", n=2),
+    "QuadHead2Go 3x1 — 5760x1080": dict(name="QuadHead2Go", x=1920, y=0, width=5760, height=1080, layout="3x1", n=3),
+    "QuadHead2Go 4x1 — 7680x1080": dict(name="QuadHead2Go", x=1920, y=0, width=7680, height=1080, layout="4x1", n=4),
+    "QuadHead2Go 2x2 — 3840x2160": dict(name="QuadHead2Go", x=1920, y=0, width=3840, height=2160, layout="2x2", n=4),
+    "Personalizada": None,
+}
+
+
+def apply_config_manual(name: str, x: int, y: int, width: int, height: int,
+                        layout: str, n_proj: int, cam: dict | None):
+    """Fija displays/projectors a mano, sin detectar nada (modo offline)."""
+    def mut(cfg):
+        cfg["displays"] = [{"name": name, "x": int(x), "y": int(y),
+                            "width": int(width), "height": int(height),
+                            "layout": layout.strip().lower()}]
+        # 1x1 = un display por proyector; en general un solo display con layout NxM
+        cfg["projectors"] = [{"name": f"proyector{i + 1}", "display": 0, "output": i + 1}
+                             for i in range(int(n_proj))]
+        if cam:
+            cfg["camera"] = cam
+        return cfg
+    return edit_config(mut)
+
+
 def apply_scan_save_raw(v: bool):
     """Guarda todas las capturas crudas del escaneo en work/raw_projN/."""
     def mut(cfg):
@@ -1244,6 +1274,53 @@ elif step.startswith("1 "):
                 st.warning("Elige al menos un monitor.")
     else:
         st.caption("Pulsa '🔎 Detectar monitores' para poblar esta sección.")
+
+    # === C · Manual / offline: elegir el perfil aunque NO esté conectado ===
+    st.markdown("---")
+    st.subheader("🛠️ C — Manual / offline (sin hardware conectado)")
+    st.markdown(
+        "Elige aquí la configuración que **vas a usar** aunque el proyector o el "
+        "QuadHead2Go no esté conectado ahora. Se escribe en `config.json` tal cual "
+        "(mismo formato que A/B), así que `compute`, el warp/blend y el "
+        "pre-procesado de video offline funcionan con ese tamaño porque solo "
+        "usan `width/height` de `config.json`, no detectan monitores en vivo. "
+        "Cuando conectes el equipo, verifica con el paso 2 (Identificar).")
+    _cur = cfg or {}
+    _cur_disp = (_cur.get("displays") or [{}])[0] if _cur.get("displays") else {}
+    _cur_layout = _cur_disp.get("layout", "3x1")
+    _cur_n = len(_cur.get("projectors") or []) or 3
+    preset_name = st.selectbox("Perfil offline", list(MANUAL_PRESETS), key="manual_preset")
+    _preset = MANUAL_PRESETS[preset_name]
+    _def = _preset or dict(name=_cur_disp.get("name", "QuadHead2Go"),
+                           x=_cur_disp.get("x", 1920), y=_cur_disp.get("y", 0),
+                           width=_cur_disp.get("width", 5760),
+                           height=_cur_disp.get("height", 1080),
+                           layout=_cur_layout, n=_cur_n)
+    _pk = f"manual_{preset_name}"
+    m_name = st.text_input("Nombre del display", value=_def["name"], key=_pk + "_name")
+    _cx, _cy = st.columns(2)
+    m_x = _cx.number_input("x (escritorio)", value=int(_def["x"]), step=1, key=_pk + "_x")
+    m_y = _cy.number_input("y (escritorio)", value=int(_def["y"]), step=1, key=_pk + "_y")
+    _cw, _ch = st.columns(2)
+    m_w = _cw.number_input("Ancho total del display", min_value=1, value=int(_def["width"]), step=1, key=_pk + "_w")
+    m_h = _ch.number_input("Alto total del display", min_value=1, value=int(_def["height"]), step=1, key=_pk + "_h")
+    m_layout = st.text_input("Layout (cols x filas, ej. 3x1)", value=_def["layout"], key=_pk + "_layout")
+    m_n = st.number_input("Nº de proyectores", 1, 16, int(_def["n"]), key=_pk + "_n")
+    if st.button("✅ Aplicar perfil manual/offline (C)", type="primary", key="apply_manual"):
+        try:
+            _cols, _rows = m_layout.strip().lower().split("x")
+            if int(_cols) * int(_rows) < int(m_n):
+                st.error(f"El layout {m_layout} solo tiene {int(_cols) * int(_rows)} salidas, "
+                         f"no {int(m_n)} proyectores.")
+            else:
+                apply_config_manual(m_name.strip() or "QuadHead2Go", int(m_x), int(m_y),
+                                    int(m_w), int(m_h), m_layout, int(m_n),
+                                    cam=(cfg or {}).get("camera"))
+                st.success(f"config.json actualizado (offline): {m_w}x{m_h} layout {m_layout}, "
+                           f"{int(m_n)} proyectores. Ya puedes calcular / pre-procesar video.")
+                st.rerun()
+        except (ValueError, AttributeError) as _e:
+            st.error(f"Layout inválido (usa '3x1', '2x2', '1x1'…): {_e}")
 
 # ==========================================================================
 # paso 2: identificar

@@ -64,5 +64,15 @@
   "current_section": -1,
   "sections": [],
   "surface_type": "flat",
-  "surface_radius": 10.0
+  "surface_radius": 10.0,
+  "displays": [
+    {
+      "name": "QuadHead2Go",
+      "x": 1920,
+      "y": 0,
+      "width": 5760,
+      "height": 1080,
+      "layout": "3x1"
+    }
+  ]
 }
