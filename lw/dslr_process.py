@@ -9,9 +9,15 @@ patrón y los guarda con el NOMBRE EXACTO del patrón (`black`, `white`,
 Todo es AUTOMÁTICO:
 
 * se recorre el vídeo entero (no importa la duración) hasta encontrar el blanco
-  de sincronía, que se reconoce por ser un salto de brillo plano y sostenido;
+  de sincronía, que se reconoce como una MESETA SOSTENIDA de brillo alto en
+  el percentil 95 del frame (la zona proyectada es brillante aunque el resto
+  del encuadre —techo, piso— sea oscuro, así que la media del frame completo
+  no sirve);
 * a partir de ahí cada cambio de ESTRUCTURA de la imagen marca un patrón
-  nuevo, así que no hacen falta fps, segundos por patrón ni stride;
+  nuevo; si eso no recupera todos los patrones esperados (las sinusoides de
+  fase se parecen demasiado entre sí), se usa como respaldo el TIEMPO: cada
+  patrón se proyectó `hold` segundos, así que se muestrea el centro de cada
+  ventana tras el final de la meseta, con el fps real del vídeo;
 * los cambios de brillo global (autoexposición, banding del proyector) se
   ignoran, y de cada patrón se guarda el frame más representativo, no el
   primero ni el del medio.
@@ -32,6 +38,8 @@ DARK_MEAN = 200.0     # por debajo de esto se considera el primer patrón (negro
 STRUCT_TOL = 6.0      # diferencia de ESTRUCTURA que marca cambio de patrón
 BRIGHT_TOL = 60.0     # salto de brillo global que también marca cambio de patrón
 MIN_SEG = 2           # menos frames que esto es una transición, no un patrón
+SYNC_P95_FRAC = 0.45  # la meseta debe superar baseline + esta fracción del rango p95
+SYNC_P95_MIN = 90.0   # ... y nunca por debajo de este p95 absoluto
 SEG_BUFFER = 32       # frames que se guardan de un tramo para elegir el mejor
 ANALYSIS_WIDTH = 320  # ancho al que se reduce cada frame para analizarlo
 
@@ -48,6 +56,17 @@ def _small(frame):
 
 def _mean(small):
     return float(small.mean())
+
+
+def _p95(small):
+    """Percentil 95 del brillo: representa la zona iluminada del frame.
+
+    La proyección rara vez llena todo el encuadre (siempre se ve algo de
+    techo/piso/entorno oscuro), así que la media se diluye y la desviación
+    sube. El p95 mide lo brillante que es la parte más iluminada —la señal
+    que importa— sin depender de cuánto entorno oscuro haya alrededor.
+    """
+    return float(np.percentile(small, 95))
 
 
 def _change(a, b, struct_tol=STRUCT_TOL, bright_tol=BRIGHT_TOL):
@@ -80,7 +99,7 @@ def _best_frame(frames):
 
 
 # -- localización del blanco de sincronía ------------------------------------
-def _find_sync_frame(video_path):
+def _find_sync_frame_legacy(video_path):
     """Localiza el blanco de sincronía y devuelve (indice, brillo) o (None, pico).
 
     No se busca un valor absoluto de brillo (un blanco proyectado y grabado con
@@ -130,6 +149,70 @@ def _find_sync_frame(video_path):
     finally:
         cap.release()
     return None, peak
+
+
+def _p95_series(video_path):
+    """Devuelve (p95_por_frame, fps) recorriendo el vídeo una vez."""
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"No se pudo abrir el vídeo: {video_path}")
+    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+    series = []
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            series.append(_p95(_small(frame)))
+    finally:
+        cap.release()
+    return np.array(series, dtype=np.float64), fps
+
+
+def _find_sync_frame(video_path, sync_s=3.0):
+    """Localiza el blanco de sincronía como meseta sostenida de p95 alto.
+
+    Devuelve (inicio, pico_p95, fin) donde `fin` es el primer frame YA fuera
+    del blanco (ahí empieza el patrón `black`), o (None, pico, None).
+
+    Por qué p95 y no la media: en un encuadre real la proyección ocupa solo
+    una banda (techo oscuro arriba, piso abajo). La media del frame completo
+    queda diluida (~130 aunque la proyección esté a 220) y la desviación
+    supera cualquier límite de "plano". El p95 sí ve la zona proyectada.
+
+    La meseta debe durar al menos la mitad del blanco proyectado (`sync_s`),
+    lo que la distingue del patrón `white` de la secuencia (solo `hold`
+    segundos). Se busca la PRIMERA meseta así: la sincronía precede a los
+    patrones. Si no aparece ninguna, se recurre al detector antiguo de media.
+    """
+    series, fps = _p95_series(video_path)
+    if len(series) == 0:
+        return None, 0.0, None
+    peak = float(series.max())
+    baseline = float(np.percentile(series, 10))
+    thr = max(baseline + SYNC_P95_FRAC * (peak - baseline), SYNC_P95_MIN)
+    if fps > 0:
+        min_len = max(6, int(round(fps * max(sync_s, 0.5) * 0.5)))
+    else:
+        min_len = 12
+
+    hot = series >= thr
+    start = None
+    for i in range(len(series)):
+        if hot[i]:
+            if start is None:
+                start = i
+        elif start is not None:
+            if i - start >= min_len:
+                return start, peak, i
+            start = None
+    if start is not None and len(series) - start >= min_len:
+        return start, peak, len(series)
+
+    legacy_idx, legacy_peak = _find_sync_frame_legacy(video_path)
+    if legacy_idx is not None:
+        return legacy_idx, float(max(peak, legacy_peak)), None
+    return None, peak, None
 
 
 # -- troceado del vídeo en patrones ------------------------------------------
@@ -283,13 +366,127 @@ def _by_stride(video_path, names, sync_idx, stride, dark_mean):
     return out
 
 
+def _video_fps(video_path):
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"No se pudo abrir el vídeo: {video_path}")
+    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+    cap.release()
+    return fps
+
+
+def _frames_at(video_path, indices):
+    """Lee los frames en los índices indicados (buscando uno a uno)."""
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"No se pudo abrir el vídeo: {video_path}")
+    out = []
+    try:
+        for idx in indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
+            ret, frame = cap.read()
+            out.append(frame if ret else None)
+    finally:
+        cap.release()
+    return out
+
+
+def _by_timing_fit(video_path, n_patterns, sync_end, hold):
+    """Respaldo por tiempo AJUSTADO a los cambios reales del vídeo.
+
+    El paso nominal `hold * fps` deriva: el proyector tarda un poco más que
+    `hold` por patrón (overhead de flush) y el fps reportado puede no ser
+    exacto, así que tras 40 patrones la ventana puede caer en la transición
+    siguiente. En su lugar se detectan los puntos de cambio de estructura
+    tras la sincronía, se les asigna su índice de patrón y se ajusta una
+    recta (inicio + paso * k); el centro de cada patrón sale de esa recta,
+    sin deriva acumulada. Los patrones de fase fusionados por estructura
+    simplemente no aportan punto de cambio: la recta los interpola.
+    Devuelve (frames, detalle) o (None, motivo).
+    """
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"No se pudo abrir el vídeo: {video_path}")
+    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+    smalls = []
+    try:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, int(sync_end) - 1))
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            smalls.append(_small(frame))
+    finally:
+        cap.release()
+    if len(smalls) < 10:
+        return None, "vídeo demasiado corto tras la sincronía"
+    base = max(0, int(sync_end) - 1)
+    changes = [base + i for i in range(1, len(smalls))
+               if _change(smalls[i], smalls[i - 1])]
+    if len(changes) < 3:
+        return None, "sin puntos de cambio para ajustar el paso"
+    intervals = np.diff(changes).astype(np.float64)
+    step_guess = float(np.median(intervals)) if len(intervals) else 0.0
+    if fps > 0 and hold > 0:
+        nominal = hold * fps
+        if not (0.5 * nominal <= step_guess <= 1.5 * nominal):
+            step_guess = nominal
+    if step_guess <= 0:
+        return None, "paso estimado inválido"
+    # Dedupar cambios pegados (transición de 2 frames) y asignar índice.
+    kept = []
+    for c in changes:
+        if not kept or c - kept[-1] >= max(3.0, step_guess * 0.5):
+            kept.append(c)
+    ks, cs = [], []
+    for c in kept:
+        k = int(round((c - kept[0]) / step_guess))
+        if not ks or k > ks[-1]:
+            ks.append(k)
+            cs.append(c)
+    if len(cs) < 3:
+        return None, "pocos cambios únicos para ajustar"
+    slope, intercept = np.polyfit(np.array(ks, float), np.array(cs, float), 1)
+    if not np.isfinite(slope) or slope <= 0:
+        return None, "ajuste de paso inválido"
+    if fps > 0 and hold > 0:
+        nominal = hold * fps
+        if not (0.5 * nominal <= slope <= 1.5 * nominal):
+            return None, f"paso ajustado {slope:.1f} fuera de rango nominal {nominal:.1f}"
+    indices = [int(round(intercept + (k + 0.5) * slope)) for k in range(n_patterns)]
+    frames = _frames_at(video_path, indices)
+    if any(f is None for f in frames):
+        return None, "el vídeo se acaba antes de la última ventana"
+    return frames, f"tiempo ajustado (paso {slope:.2f} frames, inicio {intercept:.0f})"
+
+
+def _by_timing(video_path, n_patterns, start_idx, hold):
+    """Respaldo por tiempo: el centro de cada ventana de `hold` segundos.
+
+    `patterns` proyecta cada patrón exactamente `hold` s, así que una vez
+    localizado el final del blanco de sincronía el patrón k está centrado en
+    start + (k + 0.5) * hold * fps. Esto recupera también los patrones de
+    fase, que son tan parecidos entre sí que el troceado por estructura los
+    fusiona. Devuelve (frames, detalle) o (None, motivo) si no llega.
+    """
+    fps = _video_fps(video_path)
+    if fps <= 0 or hold <= 0:
+        return None, "sin fps/hold válidos"
+    step = hold * fps
+    indices = [int(round(start_idx + (k + 0.5) * step)) for k in range(n_patterns)]
+    frames = _frames_at(video_path, indices)
+    if any(f is None for f in frames):
+        return None, f"el vídeo se acaba antes de la ventana {len(frames)}"
+    return frames, f"tiempo (hold {hold:g} s @ {fps:.1f} fps)"
+
+
 def _clear_pngs(output_dir):
     for f in output_dir.glob("*.png"):
         f.unlink()
 
 
 def extract_patterns(video_path, output_dir, names=None, num_patterns=32,
-                     stride=None, dark_mean=DARK_MEAN):
+                     stride=None, dark_mean=DARK_MEAN, hold=0.4, sync_s=3.0):
     """Extrae un frame por patrón del vídeo y los guarda como `<nombre>.png`.
 
     names:
@@ -297,10 +494,14 @@ def extract_patterns(video_path, output_dir, names=None, num_patterns=32,
         `lw.dslr_offline.sequence_names()`. Si se omite se usa el modo antiguo
         (`col0.png`, `col1.png`, ...), que sólo sirve para inspeccionar el
         vídeo: el Decoder no puede decodificar esos nombres.
+    hold, sync_s:
+        Segundos por patrón y de blanco de sincronía usados al proyectar
+        (los mismos que se pasaron a `calibrate.py patterns`). Solo se usan
+        para el respaldo por tiempo si el troceado por estructura no
+        recupera todos los patrones.
     stride:
-        Déjalo en None (recomendado): el troceado es automático y no necesita
-        saber fps ni segundos por patrón. Sólo si se indica un entero se usa el
-        modo antiguo de saltar N frames entre patrón y patrón.
+        Déjalo en None (recomendado): el troceado es automático. Sólo si se
+        indica un entero se usa el modo antiguo de saltar N frames.
 
     Devuelve el número de frames extraídos.
     """
@@ -317,13 +518,13 @@ def extract_patterns(video_path, output_dir, names=None, num_patterns=32,
 
     _clear_pngs(output_dir)
 
-    sync_idx, peak = _find_sync_frame(video_path)
+    sync_idx, peak, sync_end = _find_sync_frame(video_path, sync_s=sync_s)
     if sync_idx is None:
         raise RuntimeError(
-            f"No se encontró el blanco de sincronía en {video_path.name}: el frame "
-            f"más brillante de todo el vídeo tiene brillo medio {peak:.0f}. Graba "
+            f"No se encontró el blanco de sincronía en {video_path.name}: el p95 "
+            f"(zona más iluminada) máximo de todo el vídeo es {peak:.0f}. Graba "
             "también los 3 s de blanco (empieza a grabar ANTES de lanzar la "
-            "secuencia) y comprueba que el códec sea MJPG/AVI o H.264/MP4.")
+            "secuencia) y encuadra la proyección en el centro del frame.")
 
     if stride is not None:
         frames = _by_stride(video_path, names, sync_idx, int(stride), dark_mean)
@@ -339,14 +540,27 @@ def extract_patterns(video_path, output_dir, names=None, num_patterns=32,
         lengths = [ln for ln in lengths if ln >= MIN_SEG]
         if len(frames) > len(names):
             frames, lengths = _merge_to_count(frames, lengths, len(names))
-        if len(frames) != len(names):
-            raise RuntimeError(
-                f"Se detectaron {len(frames)} patrones en {video_path.name} y se "
-                f"esperaban {len(names)} (config.json). Comprueba que el vídeo "
-                "corresponde a ese proyector, que no se corta antes de terminar y "
-                "que el tamaño del proyector y el «cell_size» configurados son los "
-                "que se proyectaron.")
         detail = "automático"
+        if len(frames) != len(names):
+            # Respaldo por tiempo: las fases sinusoidales se fusionan al
+            # trocear por estructura, pero cada patrón duró `hold` segundos.
+            fps = _video_fps(video_path)
+            if sync_end is None:
+                sync_end = sync_idx + int(round(fps * sync_s)) if fps > 0 else sync_idx
+            timed, why = _by_timing_fit(video_path, len(names), sync_end, hold)
+            if timed is None:
+                timed, why = _by_timing(video_path, len(names), sync_end, hold)
+            if timed is not None:
+                frames, detail = timed, why
+            else:
+                raise RuntimeError(
+                    f"Se detectaron {len(frames)} patrones en {video_path.name} y se "
+                    f"esperaban {len(names)} (config.json); el respaldo por tiempo "
+                    f"tampoco llegó ({why}). Comprueba que el vídeo corresponde a "
+                    "ese proyector, que no se corta antes de terminar, que el "
+                    "hold/sincronía usados al proyectar coinciden con los indicados "
+                    "y que el tamaño del proyector y el «cell_size» configurados "
+                    "son los que se proyectaron.")
 
     for name, frame in zip(names, frames):
         cv2.imwrite(str(output_dir / f"{name}.png"), frame)

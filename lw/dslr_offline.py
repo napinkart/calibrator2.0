@@ -8,6 +8,7 @@ siguientes (compute, verify) no notan la diferencia.
 from __future__ import annotations
 
 import copy
+import shutil
 from pathlib import Path
 
 import cv2
@@ -82,4 +83,21 @@ def run_offline_scan(cfg, projector_index, work_dir, log=print):
     np.savez_compressed(out, width=w, height=h, cell=cell, **dec)
     log(f"Proyector {projector_index} ({proj.get('name', '?')}): {len(names)} patrones, "
         f"{dec['valid'].mean() * 100:.1f}% de píxeles válidos -> {out.name}")
+
+    # Los mismos artefactos que escribe el escaneo en vivo, para que la wizard
+    # los trate igual: sin ellos el paso de bordes cree que no se escaneó.
+    # all_white_proj{i}.png = el frame blanco extraído del vídeo (misma pose
+    # de cámara y proyector en blanco que la captura en vivo equivalente).
+    white_png = raw_dir / "white.png"
+    if white_png.is_file():
+        shutil.copyfile(white_png, work / f"all_white_proj{projector_index}.png")
+    try:
+        from lw.pipeline import contact_sheet, decoded_preview
+        sheet = contact_sheet(raw_dir)
+        if sheet is not None:
+            cv2.imwrite(str(work / f"captures_proj{projector_index}.png"), sheet)
+        cv2.imwrite(str(work / f"decoded_proj{projector_index}.png"),
+                    decoded_preview(dec, w, h, cell))
+    except Exception as e:  # el preview no bloquea el escaneo
+        log(f"(aviso: no se pudieron generar previews: {e})")
     return dec

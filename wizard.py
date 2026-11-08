@@ -1360,58 +1360,36 @@ Valida individualmente CADA frame que usará el escaneo:
             with open(temp_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
             try:
-                # RUN CHECK_VIDEO.PY TO ANALYZE THE UPLOADED VIDEO FIRST
-                with st.spinner("Analizando el vídeo con check_video.py..."):
-                    import subprocess
-                    import sys
-
-                    # Run check_video.py to diagnose the issue
-                    result = subprocess.run(
-                        [sys.executable, "check_video.py", str(temp_path), "--projector", str(proj_idx)],
-                        capture_output=True,
-                        text=True,
-                        cwd=str(HERE)
-                    )
-
-                    if result.returncode != 0:
-                        st.error(f"❌ El vídeo no es válido para el calibrador:")
-                        st.error(f"```\n{result.stdout}\n{result.stderr}\n```")
-
-                        # Show troubleshooting suggestions
-                        st.markdown("### 🔧 Solución de problemas:")
-                        st.markdown("1. **Graba el vídeo correctamente:**")
-                        st.markdown("   - Abre la cámara del calibrador con la configuración correcta")
-                        st.markdown("   - Proyecta la secuencia de patrones (empieza con 3s de blanco)")
-                        st.markdown("   - Graba ANTES de proyectar la secuencia para capturar el blanco")
-                        st.markdown("   - Asegúrate de que el blanco sea muy brillante (> 240)")
-
-                        st.markdown("2. **Códec de vídeo:**")
-                        st.markdown("   - Usa grabación en formato .mov (Apple)")
-                        st.markdown("   - Asegúrate de que sea H.264 (no HEVC/H.265)")
-                        st.markdown("   - Configuración de grabación recomendada: 1080p 30fps")
-
-                        st.markdown("3. **Posición de la cámara:**")
-                        st.markdown("   - La cámara debe ver la pantalla del calibrador completamente")
-                        st.markdown("   - Evita sombras o reflections en la lente")
-                        st.markdown("   - La iluminación debe ser uniforme")
-
-                        # Continue to manual mode anyway
-                        raise ValueError("Vídeo diagnosticado como inválido, continuando con modo manual")
-
-                    st.success(f"✅ Vídeo analizado correctamente:")
-                    st.text(result.stdout)
+                # Nota: check_video.py es solo una herramienta de diagnóstico
+                # manual; NO se usa como compuerta aquí (antes re-ejecutaba la
+                # extracción y bloqueaba vídeos válidos). La extracción de
+                # abajo ya reporta el motivo concreto si el vídeo no sirve.
 
                 # El nombrado de los frames sale de la MISMA secuencia que
                 # espera el Decoder (black, white, col00p, col00, ..., phx00)
                 names = sequence_names(config_35, proj_idx)
                 with st.spinner("Buscando el blanco de sincronía y troceando el vídeo…"):
                     count = extract_patterns(temp_path, WORK / f"raw_proj{proj_idx}",
-                                             names=names)
+                                             names=names, hold=hold, sync_s=sync_s)
                 st.success(f"✅ {count} patrones extraídos para {projector_names[proj_idx]}")
                 with st.spinner("Generando el escaneo offline…"):
                     run_offline_scan(config_35, proj_idx, WORK)
                 st.success(f"✅ Escaneo offline listo: work/scan_proj{proj_idx}.npz "
                            "(continúa en el paso 6)")
+                # Preview de lo extraído: manos a la vista sin salir del paso.
+                raw_dir = WORK / f"raw_proj{proj_idx}"
+                if (raw_dir / "white.png").exists():
+                    st.markdown("**Frames extraídos del vídeo**")
+                    st.image(str(raw_dir / "white.png"),
+                             caption="white.png — el blanco de la secuencia (se usa "
+                                     "como fondo para marcar bordes en el paso 5)",
+                             use_container_width=True)
+                    _pnames = [f.stem for f in sorted(raw_dir.glob("*.png"))]
+                    _psel = st.selectbox("Ver otro patrón extraído", _pnames,
+                                         key=f"dslr_preview_{proj_idx}")
+                    st.image(str(raw_dir / f"{_psel}.png"),
+                             caption=f"raw_proj{proj_idx}/{_psel}.png",
+                             use_container_width=True)
             except Exception as e:
                 if "continuando con modo manual" in str(e):
                     st.warning("⚠️ Continuando con modo manual debido a problemas de vídeo")
