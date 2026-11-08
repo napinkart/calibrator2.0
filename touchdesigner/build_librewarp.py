@@ -22,13 +22,13 @@ import os
 # Carpeta de calibración. Se prueban en orden y se usa la primera que tenga
 # calibration.json + todos los mapas/negros que ese JSON referencia.
 import pathlib
-_HERE = pathlib.Path(__file__).resolve().parent if '__file__' in globals() else pathlib.Path('.')
+# OJO: dentro de TouchDesigner __file__ es la ruta DAT ('/project1/...'),
+# no un archivo del disco. NO se puede derivar nada de el. Por eso la ruta
+# principal es absoluta (ajustala si mueves la carpeta del proyecto).
 CALIB_DIR_CANDIDATES = [
-    # output/ junto al proyecto (el calibrador lo escribe en <proyecto>/output)
-    # y junto a este script (touchdesigner/../output). Funciona sin editar.
-    str(_HERE.parent / 'output'),
-    str(_HERE / 'output'),
-    r'C:\Users\PC\Desktop\calibrator\output',   # copia en el Escritorio
+    r'C:\Users\PC\Documents\calibrator-main\output',  # carpeta del proyecto
+    str(pathlib.Path.home() / 'Documents' / 'calibrator-main' / 'output'),
+    r'C:\Users\PC\Desktop\calibrator\output',         # copia en el Escritorio
 ]
 COMP_NAME = 'librewarp'
 WINDOW_MODE = 'canvas'      # 'canvas' (1 ventana por display) o 'separate' (1 por proyector)
