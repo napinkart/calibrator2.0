@@ -664,11 +664,14 @@ def compute(cfg: dict, work: Path, out: Path, edges=None, edge_mode=None, log=pr
     for i, (d, (pmap, pvalid, st)) in enumerate(zip(decs, maps)):
         uv = _sample_map(np.nan_to_num(cam_uv, nan=-10.0), pmap[..., 0], pmap[..., 1],
                          border=-10.0)
-        # zona que este proyector DEBE iluminar: su huella ∩ la pantalla marcada
-        inside = (pvalid & np.all(np.isfinite(uv), -1)
+        # zona que este proyector DEBE iluminar: la pantalla marcada, en
+        # espacio de proyector. NO se exige pvalid (región decodificada):
+        # una celda dentro de la pantalla que no decodificó se extrapola
+        # con el TPS y el EXR debe salir relleno igualmente.
+        inside = (np.all(np.isfinite(uv), -1)
                   & (uv[..., 0] >= -0.01) & (uv[..., 0] <= 1.01)
                   & (uv[..., 1] >= -0.01) & (uv[..., 1] <= 1.01))
-        solid = _solid_mask(inside) & pvalid            # sin huecos del sistema
+        solid = _solid_mask(inside, max_hole_frac=1.0)  # sin huecos del sistema
         u = np.where(solid, np.clip(uv[..., 0], 0, 1), -1.0).astype(np.float32)
         v = np.where(solid, 1.0 - np.clip(uv[..., 1], 0, 1), -1.0).astype(np.float32)
         know = solid & (u >= 0)
@@ -885,13 +888,15 @@ def compute_per_projector(cfg, work, out, log=print):
     results = []
     for i in range(n):
         u, v = geo["uvs"][i]
-        keep = geo["pmaps"][i][1]
         w0, w1 = geo["wins"][i]
         # SOLO la ventana de este proyector: fuera de ella el contenido es del
         # vecino y proyectarlo ahí sería contenido duplicado y luz doble.
-        inside = (keep & (u >= w0 - 0.005) & (u <= w1 + 0.005)
+        # Dentro de la ventana, la máscara es la pantalla MARCADA (uv en
+        # rango), sin exigir pvalid: lo no decodificado dentro del marcado
+        # se extrapola y el EXR sale sin huecos.
+        inside = ((u >= w0 - 0.005) & (u <= w1 + 0.005)
                   & (v >= -0.005) & (v <= 1.005))
-        solid = _solid_mask(inside) & keep          # sin huecos del sistema
+        solid = _solid_mask(inside, max_hole_frac=1.0)  # sin huecos del sistema
         know = inside & np.isfinite(u) & np.isfinite(v)
         if know.any():
             # los huecos rellenados toman la coordenada del vecino válido más
@@ -1093,7 +1098,7 @@ def render_projector(r, content=None, gamma=2.2, black=0.0, uniformity=1.0, whit
     if white: return np.full((u.shape[0], u.shape[1], 3), 255, np.uint8)
     if content is None:
         gu, gv = u * 16, v * 16 * 9 / 16
-        line = (np.abs(gu - np.round(gu)) < 0.6) | (np.abs(gv - np.round(gv)) < 0.6)
+        line = (np.abs(gu - np.round(gu)) < 0.06) | (np.abs(gv - np.round(gv)) < 0.06)
         img = np.dstack([np.where(line, 1.0, np.clip(u, 0, 1)) * 0.6, np.where(line, 1.0, np.clip(v, 0, 1)) * 0.6, np.where(line, 1.0, 1.0 - np.clip(u, 0, 1)) * 0.6])
     else:
         img = cv2.remap(content.astype(np.float32) / 255.0, u, v, cv2.INTER_LINEAR)
