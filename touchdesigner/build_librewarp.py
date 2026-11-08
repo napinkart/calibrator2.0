@@ -383,7 +383,14 @@ def build():
     displays = meta.get('displays') or []
     if displays:
         for di, d in enumerate(displays):
-            members = [(k, p['rect']) for k, p in enumerate(projs) if p.get('display', 0) == di]
+            # 'rect' es [x, y, w, h] relativo al display; si la calibración no
+            # lo trae (caso actual), se derive de desktop_x/y - display x/y.
+            def _rect(p):
+                if p.get('rect'):
+                    return list(p['rect'])
+                return [p.get('desktop_x', 0) - d['x'], p.get('desktop_y', 0) - d['y'],
+                        p['width'], p['height']]
+            members = [(k, _rect(p)) for k, p in enumerate(projs) if p.get('display', 0) == di]
             if members:
                 groups.append((d.get('name', 'display%d' % di), d['x'], d['y'],
                                d['width'], d['height'], members))
