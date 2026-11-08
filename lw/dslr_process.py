@@ -24,10 +24,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-SYNC_FLOOR = 120.0    # brillo medio mínimo para que un frame pueda ser el blanco
-SYNC_JUMP = 1.25      # ... y que destaque un 25 % sobre lo más brillante visto antes
-SYNC_FLAT = 25.0      # desviación típica máxima dentro del frame (el blanco es plano)
-SYNC_STREAK = 3       # frames seguidos que debe mantenerse para darlo por bueno
+SYNC_FLOOR = 100.0    # brillo medio mínimo para que un frame pueda ser el blanco (bajado de 120)
+SYNC_JUMP = 1.15      # ... y que destaque un 15 % sobre lo más brillante visto antes (bajado de 1.25)
+SYNC_FLAT = 60.0      # desviación típica máxima dentro del frame (el blanco es plano) (subido de 25)
+SYNC_STREAK = 2       # frames seguidos que debe mantenerse para darlo por bueno (bajado de 3)
 DARK_MEAN = 200.0     # por debajo de esto se considera el primer patrón (negro)
 STRUCT_TOL = 6.0      # diferencia de ESTRUCTURA que marca cambio de patrón
 BRIGHT_TOL = 60.0     # salto de brillo global que también marca cambio de patrón
