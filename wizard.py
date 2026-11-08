@@ -1360,6 +1360,47 @@ Valida individualmente CADA frame que usará el escaneo:
             with open(temp_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
             try:
+                # RUN CHECK_VIDEO.PY TO ANALYZE THE UPLOADED VIDEO FIRST
+                with st.spinner("Analizando el vídeo con check_video.py..."):
+                    import subprocess
+                    import sys
+
+                    # Run check_video.py to diagnose the issue
+                    result = subprocess.run(
+                        [sys.executable, "check_video.py", str(temp_path), "--projector", str(proj_idx)],
+                        capture_output=True,
+                        text=True,
+                        cwd=str(HERE)
+                    )
+
+                    if result.returncode != 0:
+                        st.error(f"❌ El vídeo no es válido para el calibrador:")
+                        st.error(f"```\n{result.stdout}\n{result.stderr}\n```")
+
+                        # Show troubleshooting suggestions
+                        st.markdown("### 🔧 Solución de problemas:")
+                        st.markdown("1. **Graba el vídeo correctamente:**")
+                        st.markdown("   - Abre la cámara del calibrador con la configuración correcta")
+                        st.markdown("   - Proyecta la secuencia de patrones (empieza con 3s de blanco)")
+                        st.markdown("   - Graba ANTES de proyectar la secuencia para capturar el blanco")
+                        st.markdown("   - Asegúrate de que el blanco sea muy brillante (> 240)")
+
+                        st.markdown("2. **Códec de vídeo:**")
+                        st.markdown("   - Usa grabación en formato .mov (Apple)")
+                        st.markdown("   - Asegúrate de que sea H.264 (no HEVC/H.265)")
+                        st.markdown("   - Configuración de grabación recomendada: 1080p 30fps")
+
+                        st.markdown("3. **Posición de la cámara:**")
+                        st.markdown("   - La cámara debe ver la pantalla del calibrador completamente")
+                        st.markdown("   - Evita sombras o reflections en la lente")
+                        st.markdown("   - La iluminación debe ser uniforme")
+
+                        # Continue to manual mode anyway
+                        raise ValueError("Vídeo diagnosticado como inválido, continuando con modo manual")
+
+                    st.success(f"✅ Vídeo analizado correctamente:")
+                    st.text(result.stdout)
+
                 # El nombrado de los frames sale de la MISMA secuencia que
                 # espera el Decoder (black, white, col00p, col00, ..., phx00)
                 names = sequence_names(config_35, proj_idx)
@@ -1372,7 +1413,12 @@ Valida individualmente CADA frame que usará el escaneo:
                 st.success(f"✅ Escaneo offline listo: work/scan_proj{proj_idx}.npz "
                            "(continúa en el paso 6)")
             except Exception as e:
-                st.error(f"Error procesando el vídeo o generando el escaneo: {e}")
+                if "continuando con modo manual" in str(e):
+                    st.warning("⚠️ Continuando con modo manual debido a problemas de vídeo")
+                    # Skip automatic processing and show manual mode
+                    pass
+                else:
+                    st.error(f"Error procesando el vídeo o generando el escaneo: {e}")
             finally:
                 temp_path.unlink(missing_ok=True)
     st.markdown("---")
