@@ -2887,8 +2887,9 @@ elif step.startswith("8 "):
     else:
         st.markdown(
             f"1. En TD crea un **Text DAT** y pega `touchdesigner/build_librewarp.py`.\n"
-            f"2. Arriba del script cambia `CALIB_DIR`:\n\n"
-            f"   ```python\n   CALIB_DIR = r'{OUT}'\n   ```\n\n"
+            f"   Ya busca solo el `output/` de este proyecto: no hay que editar "
+            f"`CALIB_DIR_CANDIDATES` (solo si mueves la carpeta `output`, agrega esa "
+            f"ruta a la lista arriba del script: ahora es `{OUT}`).\n\n"
             f"3. Clic derecho → **Run Script** → aparece el COMP `librewarp` "
             f"(canvas del tamaño del splitter).\n"
             f"4. Conecta tu contenido y pulsa **Abrir ventanas**.")
